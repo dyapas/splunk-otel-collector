@@ -25,6 +25,12 @@
       -   ![image](https://github.com/dyapas/splunk-otel-collector/assets/43857965/f2832f00-75a7-4914-b9da-3e0ab2ff279e)
       -   In this metrics pipeline, there is only one `exporter`. If there were multiple `exporters`, every message would fan out to every `exporter`, and would be sent to every destination specified.
       -   If you don't want all messages to go to every exporter, you can define multiple pipelines with different `exporters`.
+     
+### Collector Configuration:
+  - By default, the configuration file is saved at the file system path shown here: ` /etc/otel/collector/agent_config.yaml`
+### Otel Components:
+  - https://docs.splunk.com/observability/en/gdi/opentelemetry/components.html
+  - https://github.com/signalfx/splunk-otel-collector#readme
 
 
 
