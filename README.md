@@ -31,6 +31,7 @@
 ### Otel Components:
   - https://docs.splunk.com/observability/en/gdi/opentelemetry/components.html
   - https://github.com/signalfx/splunk-otel-collector#readme
+  - Deploy on K8s/OpenShift: https://github.com/signalfx/splunk-otel-collector-chart
 
 
 
