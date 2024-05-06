@@ -1,0 +1,42 @@
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: MustRunAs
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  name: external-secrets-restricted
+priority: null
+readOnlyRootFilesystem: true
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+requiredDropCapabilities: null
+allowHostPID: false
+allowHostNetwork: false
+allowHostIPC: false
+allowHostDirVolumePlugin: false
+allowHostPorts: false
+runAsNonRoot: true
+requiredDropCapabilities:
+  - ALL
+seccompProfiles:
+  - runtime/default
+runAsUser:
+  type: MustRunAs
+  uid: 1000
+seLinuxContext:
+  type: MustRunAs
+supplementalGroups:
+  type: RunAsAny
+users:
+- system:serviceaccount:external-secrets:external-secrets
+- system:serviceaccount:external-secrets:external-secrets-webhook
+- system:serviceaccount:external-secrets:external-secrets-cert-controller
+volumes:
+- configMap
+- downwardAPI
+- emptyDir
+- ephemeral
+- persistentVolumeClaim
+- projected
+- secret
