@@ -1,0 +1,39 @@
+allowHostDirVolumePlugin: false
+allowHostIPC: false
+allowHostNetwork: false
+allowHostPID: false
+allowHostPorts: false
+allowPrivilegeEscalation: false
+allowPrivilegedContainer: false
+allowedCapabilities: null
+apiVersion: security.openshift.io/v1
+defaultAddCapabilities: null
+fsGroup:
+  type: RunAsAny
+groups: []
+kind: SecurityContextConstraints
+metadata:
+  name: scc-openfeature
+priority: null
+readOnlyRootFilesystem: false
+requiredDropCapabilities:
+- ALL
+runAsUser:
+  type: MustRunAsNonRoot
+seLinuxContext:
+  type: RunAsAny
+seccompProfiles:
+- runtime/default
+supplementalGroups:
+  type: RunAsAny
+users:
+- system:serviceaccount:open-feature-demo:default
+- system:serviceaccount:open-feature-demo:open-feature-demo-sa
+volumes:
+- configMap
+- downwardAPI
+- emptyDir
+- ephemeral
+- persistentVolumeClaim
+- projected
+- secret
