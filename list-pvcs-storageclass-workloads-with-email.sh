@@ -2,13 +2,13 @@
 
 echo "Fetching PVCs with StorageClass: ocs-storagecluster-cephfs..."
 
-# Get all PVCs with storageClassName = ocs-storagecluster-cephfs
+# Step 1: Get all PVCs with the specified StorageClass
 mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r '
   .items[] |
   select(.spec.storageClassName == "ocs-storagecluster-cephfs") |
   "\(.metadata.namespace),\(.metadata.name),\(.spec.resources.requests.storage)"')
 
-# Build a PVC map (namespace:name) for quick lookup
+# Step 2: Build a PVC map (namespace:name) => size
 declare -A pvc_map
 for pvc in "${cephfs_pvcs[@]}"; do
   ns=$(echo "$pvc" | cut -d',' -f1)
@@ -17,23 +17,23 @@ for pvc in "${cephfs_pvcs[@]}"; do
   pvc_map["$ns/$name"]="$size"
 done
 
-# Build namespace -> email map
+# Step 3: Build namespace label maps for email and manager
 declare -A ns_email_map
-while IFS= read -r line; do
-  ns=$(echo "$line" | cut -d',' -f1)
-  email=$(echo "$line" | cut -d',' -f2)
+declare -A ns_manager_map
+
+while IFS=',' read -r ns email manager; do
   ns_email_map["$ns"]="$email"
-done < <(oc get ns -o json | jq -r '.items[] | "\(.metadata.name),\(.metadata.labels["project.ocp.com/email"] // "N/A")"')
+  ns_manager_map["$ns"]="$manager"
+done < <(oc get ns -o json | jq -r '
+  .items[] |
+  "\(.metadata.name),\(.metadata.labels["project.ocp.com/email"] // "N/A"),\(.metadata.labels["project.ocp.bcbc.com/manager"] // "N/A")"')
 
-echo "Scanning workloads..."
+echo "Scanning workloads using CephFS PVCs..."
 
-# Function to scan workloads and link to PVCs
+# Step 4: Extract volumes from workloads that use PVCs
 check_pvcs_in_workload() {
   local kind=$1
-  local json
-  json=$(oc get "$kind" --all-namespaces -o json)
-
-  echo "$json" | jq -r --arg kind "$kind" '
+  oc get "$kind" --all-namespaces -o json | jq -r --arg kind "$kind" '
     .items[] |
     {
       namespace: .metadata.namespace,
@@ -51,10 +51,10 @@ check_pvcs_in_workload() {
   '
 }
 
-# Header
-echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL"
+# Step 5: Output header
+echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL,MANAGER"
 
-# Find matching workloads
+# Step 6: Match workloads with PVCs and labels
 for kind in deployment deploymentconfig statefulset; do
   check_pvcs_in_workload "$kind"
 done | while IFS=',' read -r ns name kind pvc_name; do
@@ -62,7 +62,8 @@ done | while IFS=',' read -r ns name kind pvc_name; do
   if [[ -n "${pvc_map[$key]}" ]]; then
     size="${pvc_map[$key]}"
     email="${ns_email_map[$ns]:-N/A}"
-    echo "$kind,$ns,$name,$pvc_name,$size,$email"
+    manager="${ns_manager_map[$ns]:-N/A}"
+    echo "$kind,$ns,$name,$pvc_name,$size,$email,$manager"
   fi
 done | column -t -s','
 
