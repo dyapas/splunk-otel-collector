@@ -1,12 +1,18 @@
 #!/bin/bash
 
-echo "Fetching PVCs with StorageClass: ocs-storagecluster-cephfs..."
+STORAGE_CLASS="ocs-storagecluster-cephfs"
 
-# Step 1: Get all PVCs with the specified StorageClass
-mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r '
+echo "Fetching PVCs using StorageClass: $STORAGE_CLASS (spec or annotation)..."
+
+# Step 1: Get all PVCs matching storage class via spec or annotation
+mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r --arg sc "$STORAGE_CLASS" '
   .items[] |
-  select(.spec.storageClassName == "ocs-storagecluster-cephfs") |
-  "\(.metadata.namespace),\(.metadata.name),\(.spec.resources.requests.storage)"')
+  select(
+    (.spec.storageClassName == $sc) or
+    (.metadata.annotations["volume.beta.kubernetes.io/storage-class"] == $sc)
+  ) |
+  "\(.metadata.namespace),\(.metadata.name),\(.spec.resources.requests.storage)"
+')
 
 # Step 2: Build a PVC map (namespace:name) => size
 declare -A pvc_map
@@ -26,11 +32,12 @@ while IFS=',' read -r ns email manager; do
   ns_manager_map["$ns"]="$manager"
 done < <(oc get ns -o json | jq -r '
   .items[] |
-  "\(.metadata.name),\(.metadata.labels["project.ocp.com/email"] // "N/A"),\(.metadata.labels["project.ocp.bcbc.com/manager"] // "N/A")"')
+  "\(.metadata.name),\(.metadata.labels["project.ocp.com/email"] // "N/A"),\(.metadata.labels["project.ocp.bcbc.com/manager"] // "N/A")"
+')
 
 echo "Scanning workloads using CephFS PVCs..."
 
-# Step 4: Extract volumes from workloads that use PVCs
+# Step 4: Extract volumes from workloads
 check_pvcs_in_workload() {
   local kind=$1
   oc get "$kind" --all-namespaces -o json | jq -r --arg kind "$kind" '
@@ -51,10 +58,10 @@ check_pvcs_in_workload() {
   '
 }
 
-# Step 5: Output header
+# Step 5: Print header
 echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL,MANAGER"
 
-# Step 6: Match workloads with PVCs and labels
+# Step 6: Match workloads to PVCs and namespace labels
 for kind in deployment deploymentconfig statefulset; do
   check_pvcs_in_workload "$kind"
 done | while IFS=',' read -r ns name kind pvc_name; do
