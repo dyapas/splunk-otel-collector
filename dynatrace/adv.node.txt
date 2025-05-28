@@ -1,0 +1,8 @@
+fetch kubernetes.node.cpu.usage, kubernetes.node.cpu.capacity, kubernetes.node.memory.usage, kubernetes.node.memory.capacity
+| filter kubernetes.node.role == "worker"
+| summarize avg(cpuUsage: kubernetes.node.cpu.usage), 
+            avg(cpuCapacity: kubernetes.node.cpu.capacity), 
+            avg(memUsage: kubernetes.node.memory.usage), 
+            avg(memCapacity: kubernetes.node.memory.capacity) by kubernetes.node
+| extend cpuUsagePercent = (cpuUsage / cpuCapacity) * 100, 
+         memUsagePercent = (memUsage / memCapacity) * 100
