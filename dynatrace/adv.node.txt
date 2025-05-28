@@ -1,8 +1,22 @@
-fetch kubernetes.node.cpu.usage, kubernetes.node.cpu.capacity, kubernetes.node.memory.usage, kubernetes.node.memory.capacity
-| filter kubernetes.node.role == "worker"
-| summarize avg(cpuUsage: kubernetes.node.cpu.usage), 
-            avg(cpuCapacity: kubernetes.node.cpu.capacity), 
-            avg(memUsage: kubernetes.node.memory.usage), 
-            avg(memCapacity: kubernetes.node.memory.capacity) by kubernetes.node
-| extend cpuUsagePercent = (cpuUsage / cpuCapacity) * 100, 
-         memUsagePercent = (memUsage / memCapacity) * 100
+1. CPU Usage
+
+builtin:kubernetes.node.cpu.usage:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg
+2. CPU Capacity
+
+builtin:kubernetes.node.cpu.capacity:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg
+3. CPU Usage %
+
+((builtin:kubernetes.node.cpu.usage:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg)
+/
+(builtin:kubernetes.node.cpu.capacity:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg)) * 100
+4. Memory Usage
+
+builtin:kubernetes.node.memory.usage:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg
+5. Memory Capacity
+
+builtin:kubernetes.node.memory.capacity:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg
+6. Memory Usage %
+
+((builtin:kubernetes.node.memory.usage:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg)
+/
+(builtin:kubernetes.node.memory.capacity:filter(and(eq("kubernetes.node.role","worker"))):splitBy("kubernetes.node"):avg)) * 100
