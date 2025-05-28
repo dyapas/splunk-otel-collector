@@ -1,0 +1,79 @@
+{
+  "name": "K8s Node Metrics - Worker Nodes",
+  "tiles": [
+    {
+      "name": "K8s Node Metrics (Workers)",
+      "tileType": "DATA_EXPLORER",
+      "configured": true,
+      "bounds": {
+        "top": 0,
+        "left": 0,
+        "width": 456,
+        "height": 152
+      },
+      "tileFilter": {
+        "timeframe": "-30m"
+      },
+      "customName": "Node Level Metrics - Workers",
+      "queries": [
+        {
+          "id": "cpu_usage",
+          "metric": "kubernetes.node.cpu.usage",
+          "splitBy": ["kubernetes.node"],
+          "aggregation": "AVG",
+          "filterBy": {
+            "entityDimension": "kubernetes.node.role",
+            "conditions": ["worker"]
+          }
+        },
+        {
+          "id": "cpu_capacity",
+          "metric": "kubernetes.node.cpu.capacity",
+          "splitBy": ["kubernetes.node"],
+          "aggregation": "AVG",
+          "filterBy": {
+            "entityDimension": "kubernetes.node.role",
+            "conditions": ["worker"]
+          }
+        },
+        {
+          "id": "cpu_usage_percent",
+          "expression": "(cpu_usage:splitBy(\"kubernetes.node\") / cpu_capacity:splitBy(\"kubernetes.node\")) * 100",
+          "splitBy": ["kubernetes.node"]
+        },
+        {
+          "id": "memory_usage",
+          "metric": "kubernetes.node.memory.usage",
+          "splitBy": ["kubernetes.node"],
+          "aggregation": "AVG",
+          "filterBy": {
+            "entityDimension": "kubernetes.node.role",
+            "conditions": ["worker"]
+          }
+        },
+        {
+          "id": "memory_capacity",
+          "metric": "kubernetes.node.memory.capacity",
+          "splitBy": ["kubernetes.node"],
+          "aggregation": "AVG",
+          "filterBy": {
+            "entityDimension": "kubernetes.node.role",
+            "conditions": ["worker"]
+          }
+        },
+        {
+          "id": "memory_usage_percent",
+          "expression": "(memory_usage:splitBy(\"kubernetes.node\") / memory_capacity:splitBy(\"kubernetes.node\")) * 100",
+          "splitBy": ["kubernetes.node"]
+        }
+      ],
+      "visualConfig": {
+        "type": "TABLE",
+        "global": {
+          "displayMode": "NORMAL"
+        },
+        "series": {}
+      }
+    }
+  ]
+}
