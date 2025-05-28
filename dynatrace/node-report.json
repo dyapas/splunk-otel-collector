@@ -1,5 +1,5 @@
 {
-  "name": "K8s Node Metrics - Worker Nodes",
+  "name": "Kubernetes Node Metrics - Worker Nodes",
   "tiles": [
     {
       "name": "K8s Node Metrics (Workers)",
@@ -14,57 +14,31 @@
       "tileFilter": {
         "timeframe": "-30m"
       },
-      "customName": "Node Level Metrics - Workers",
+      "customName": "Worker Node CPU & Memory Stats",
       "queries": [
         {
           "id": "cpu_usage",
-          "metric": "kubernetes.node.cpu.usage",
-          "splitBy": ["kubernetes.node"],
-          "aggregation": "AVG",
-          "filterBy": {
-            "entityDimension": "kubernetes.node.role",
-            "conditions": ["worker"]
-          }
+          "metric": "builtin:kubernetes.node.cpu.usage:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg"
         },
         {
           "id": "cpu_capacity",
-          "metric": "kubernetes.node.cpu.capacity",
-          "splitBy": ["kubernetes.node"],
-          "aggregation": "AVG",
-          "filterBy": {
-            "entityDimension": "kubernetes.node.role",
-            "conditions": ["worker"]
-          }
+          "metric": "builtin:kubernetes.node.cpu.capacity:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg"
         },
         {
           "id": "cpu_usage_percent",
-          "expression": "(cpu_usage:splitBy(\"kubernetes.node\") / cpu_capacity:splitBy(\"kubernetes.node\")) * 100",
-          "splitBy": ["kubernetes.node"]
+          "metric": "((builtin:kubernetes.node.cpu.usage:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg)/(builtin:kubernetes.node.cpu.capacity:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg))*100"
         },
         {
           "id": "memory_usage",
-          "metric": "kubernetes.node.memory.usage",
-          "splitBy": ["kubernetes.node"],
-          "aggregation": "AVG",
-          "filterBy": {
-            "entityDimension": "kubernetes.node.role",
-            "conditions": ["worker"]
-          }
+          "metric": "builtin:kubernetes.node.memory.usage:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg"
         },
         {
           "id": "memory_capacity",
-          "metric": "kubernetes.node.memory.capacity",
-          "splitBy": ["kubernetes.node"],
-          "aggregation": "AVG",
-          "filterBy": {
-            "entityDimension": "kubernetes.node.role",
-            "conditions": ["worker"]
-          }
+          "metric": "builtin:kubernetes.node.memory.capacity:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg"
         },
         {
           "id": "memory_usage_percent",
-          "expression": "(memory_usage:splitBy(\"kubernetes.node\") / memory_capacity:splitBy(\"kubernetes.node\")) * 100",
-          "splitBy": ["kubernetes.node"]
+          "metric": "((builtin:kubernetes.node.memory.usage:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg)/(builtin:kubernetes.node.memory.capacity:filter(and(eq(\"kubernetes.node.role\",\"worker\"))):splitBy(\"kubernetes.node\"):avg))*100"
         }
       ],
       "visualConfig": {
