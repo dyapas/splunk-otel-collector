@@ -2,9 +2,15 @@
 
 set -euo pipefail
 
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <CLUSTER_NAME>"
+  exit 1
+fi
+
+CLUSTER_NAME="$1"
 STORAGE_CLASS="ocs-storagecluster-cephfs"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-REPORT_FILE="/tmp/cephfs_report_${TIMESTAMP}.csv"
+REPORT_FILE="/tmp/cephfs_report_${CLUSTER_NAME}_${TIMESTAMP}.csv"
 
 echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL,MANAGER,TIER" > "$REPORT_FILE"
 
@@ -33,49 +39,4 @@ while read -r ns_json; do
   ns=$(echo "$ns_json" | jq -r '.metadata.name')
   email=$(echo "$ns_json" | jq -r '.metadata.labels["project.ocp.com/email"] // "N/A"')
   manager=$(echo "$ns_json" | jq -r '.metadata.labels["project.ocp.bcbc.com/manager"] // "N/A"')
-  ns_email_map["$ns"]="$email"
-  ns_manager_map["$ns"]="$manager"
-done < <(oc get ns -o json | jq -c '.items[]')
-
-# Extract workloads using PVCs, include tier label
-check_pvcs_in_workload() {
-  local kind=$1
-  oc get "$kind" --all-namespaces -o json | jq -r --arg kind "$kind" '
-    .items[] |
-    {
-      namespace: .metadata.namespace,
-      name: .metadata.name,
-      tier: (.metadata.labels["app.ocp.com/tier"] // "N/A"),
-      volumes: (
-        (try .spec.template.spec.volumes // []) +
-        (try .spec.volumes // [])
-      )
-    } |
-    select(.volumes != null) |
-    . as $workload |
-    .volumes[]? |
-    select(.persistentVolumeClaim != null) |
-    "\($workload.namespace),\($workload.name),\($kind),\(.persistentVolumeClaim.claimName),\($workload.tier)"
-  '
-}
-
-# Loop through workload types
-for kind in deployment deploymentconfig statefulset; do
-  check_pvcs_in_workload "$kind"
-done | while IFS=',' read -r ns name kind pvc_name tier; do
-  key="$ns/$pvc_name"
-  if [[ -n "${pvc_map[$key]:-}" ]]; then
-    size="${pvc_map[$key]}"
-    email="${ns_email_map[$ns]:-N/A}"
-    manager="${ns_manager_map[$ns]:-N/A}"
-    echo "$kind,$ns,$name,$pvc_name,$size,$email,$manager,$tier" >> "$REPORT_FILE"
-  fi
-done
-
-# Email the report with attachment
-SUBJECT="CephFS PVC Usage Report - $(date +%F)"
-TO_EMAIL="${TO_EMAIL:-alerts@example.com}"
-echo "Please find the attached CephFS PVC usage report." | mailx \
-  -s "$SUBJECT" \
-  -a "$REPORT_FILE" \
-  "$TO_EMAIL"
+  ns
