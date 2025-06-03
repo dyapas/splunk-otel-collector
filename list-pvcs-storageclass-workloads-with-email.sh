@@ -3,10 +3,13 @@
 set -euo pipefail
 
 STORAGE_CLASS="ocs-storagecluster-cephfs"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+REPORT_FILE="/tmp/cephfs_report_${TIMESTAMP}.csv"
 
-echo "🔍 Fetching PVCs using StorageClass: $STORAGE_CLASS (spec or annotation)..."
+echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL,MANAGER,TIER" > "$REPORT_FILE"
 
-# Step 1: Get all PVCs matching the StorageClass via spec or annotation
+# Build PVC map
+declare -A pvc_map
 mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r --arg sc "$STORAGE_CLASS" '
   .items[] |
   select(
@@ -16,21 +19,16 @@ mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r --arg sc 
   "\(.metadata.namespace),\(.metadata.name),\(.spec.resources.requests.storage)"
 ')
 
-# Step 2: Build PVC map (namespace/pvc-name) => size
-declare -A pvc_map
 for pvc in "${cephfs_pvcs[@]}"; do
-  ns=$(echo "$pvc" | cut -d',' -f1)
-  name=$(echo "$pvc" | cut -d',' -f2)
-  size=$(echo "$pvc" | cut -d',' -f3)
+  ns=$(cut -d',' -f1 <<< "$pvc")
+  name=$(cut -d',' -f2 <<< "$pvc")
+  size=$(cut -d',' -f3 <<< "$pvc")
   pvc_map["$ns/$name"]="$size"
 done
 
-# Step 3: Build namespace label maps for email and manager
+# Namespace labels: email + manager
 declare -A ns_email_map
 declare -A ns_manager_map
-
-echo "📋 Fetching namespace labels for team email and manager..."
-
 while read -r ns_json; do
   ns=$(echo "$ns_json" | jq -r '.metadata.name')
   email=$(echo "$ns_json" | jq -r '.metadata.labels["project.ocp.com/email"] // "N/A"')
@@ -39,7 +37,7 @@ while read -r ns_json; do
   ns_manager_map["$ns"]="$manager"
 done < <(oc get ns -o json | jq -c '.items[]')
 
-# Step 4: Function to extract volumes from workloads
+# Extract workloads using PVCs, include tier label
 check_pvcs_in_workload() {
   local kind=$1
   oc get "$kind" --all-namespaces -o json | jq -r --arg kind "$kind" '
@@ -47,6 +45,7 @@ check_pvcs_in_workload() {
     {
       namespace: .metadata.namespace,
       name: .metadata.name,
+      tier: (.metadata.labels["app.ocp.com/tier"] // "N/A"),
       volumes: (
         (try .spec.template.spec.volumes // []) +
         (try .spec.volumes // [])
@@ -56,24 +55,27 @@ check_pvcs_in_workload() {
     . as $workload |
     .volumes[]? |
     select(.persistentVolumeClaim != null) |
-    "\($workload.namespace),\($workload.name),\($kind),\(.persistentVolumeClaim.claimName)"
+    "\($workload.namespace),\($workload.name),\($kind),\(.persistentVolumeClaim.claimName),\($workload.tier)"
   '
 }
 
-# Step 5: Output header
-echo
-echo "KIND,NAMESPACE,NAME,PVC,SIZE,TEAM_EMAIL,MANAGER"
-
-# Step 6: Scan workloads and match PVCs
+# Loop through workload types
 for kind in deployment deploymentconfig statefulset; do
   check_pvcs_in_workload "$kind"
-done | while IFS=',' read -r ns name kind pvc_name; do
+done | while IFS=',' read -r ns name kind pvc_name tier; do
   key="$ns/$pvc_name"
   if [[ -n "${pvc_map[$key]:-}" ]]; then
     size="${pvc_map[$key]}"
     email="${ns_email_map[$ns]:-N/A}"
     manager="${ns_manager_map[$ns]:-N/A}"
-    echo "$kind,$ns,$name,$pvc_name,$size,$email,$manager"
+    echo "$kind,$ns,$name,$pvc_name,$size,$email,$manager,$tier" >> "$REPORT_FILE"
   fi
-done | column -t -s','
+done
 
+# Email the report with attachment
+SUBJECT="CephFS PVC Usage Report - $(date +%F)"
+TO_EMAIL="${TO_EMAIL:-alerts@example.com}"
+echo "Please find the attached CephFS PVC usage report." | mailx \
+  -s "$SUBJECT" \
+  -a "$REPORT_FILE" \
+  "$TO_EMAIL"
