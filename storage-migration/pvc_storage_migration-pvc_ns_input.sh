@@ -2,8 +2,10 @@
 
 set -euo pipefail
 
-### Configurable variables
-VOLUME_SNAPSHOT_CLASS="your-snapshotclass"
+#######################################
+# Configuration (set your values here)
+#######################################
+VOLUME_SNAPSHOT_CLASS="your-volumesnapshotclass"
 NEW_STORAGE_CLASS="your-new-storageclass"
 LOG_DIR="./logs"
 MANIFEST_DIR="./manifests"
@@ -17,52 +19,67 @@ mkdir -p "$LOG_DIR" "$MANIFEST_DIR"
 LOG_FILE="$LOG_DIR/storage-migration-${TIMESTAMP}.log"
 touch "$ERROR_REPORT"
 
-### Logging
-log()     { echo "[INFO]    $*" | tee -a "$LOG_FILE"; }
-log_warn(){ echo "[WARNING] $*" | tee -a "$LOG_FILE"; }
-log_err() { echo "[ERROR]   $*" | tee -a "$LOG_FILE" >&2; echo "$NAMESPACE,,,$PVC_NAME,$*" >> "$ERROR_REPORT"; }
+log() { echo "[INFO]    $*" | tee -a "$LOG_FILE"; }
+log_warn() { echo "[WARNING] $*" | tee -a "$LOG_FILE"; }
+log_err() {
+  echo "[ERROR]   $*" | tee -a "$LOG_FILE" >&2
+  echo "$NAMESPACE,,,$PVC_NAME,$*" >> "$ERROR_REPORT"
+}
 
-### Input args
+#######################################
+# Parse Arguments
+#######################################
 while [[ $# -gt 0 ]]; do
   case $1 in
-    --namespace) NAMESPACE="$2"; shift ;;
-    --pvc-name) PVC_NAME="$2"; shift ;;
-    --dry-run) DRY_RUN=true ;;
-    *) echo "Unknown option $1"; exit 1 ;;
+    --namespace)
+      NAMESPACE="$2"
+      shift 2
+      ;;
+    --pvc-name)
+      PVC_NAME="$2"
+      shift 2
+      ;;
+    --dry-run)
+      DRY_RUN=true
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1"
+      exit 1
+      ;;
   esac
-  shift
 done
 
 if [[ -z "${NAMESPACE:-}" || -z "${PVC_NAME:-}" ]]; then
-  echo "Usage: $0 --namespace <namespace> --pvc-name <pvc> [--dry-run]"
+  echo "Usage: $0 --namespace <namespace> --pvc-name <pvc-name> [--dry-run]"
   exit 1
 fi
 
-SNAPSHOT_NAME="${PVC_NAME}-snapshot-${TIMESTAMP}"
-NEW_PVC="${PVC_NAME}-ps"
-mkdir -p "$MANIFEST_DIR/$NAMESPACE"
-
-### Validate PVC
+#######################################
+# Validate PVC
+#######################################
 if ! oc get pvc "$PVC_NAME" -n "$NAMESPACE" &>/dev/null; then
-  log_err "PVC $PVC_NAME does not exist in $NAMESPACE"
+  log_err "PVC $PVC_NAME not found in namespace $NAMESPACE"
   exit 1
 fi
 
 PHASE=$(oc get pvc "$PVC_NAME" -n "$NAMESPACE" -o jsonpath='{.status.phase}')
 if [[ "$PHASE" != "Bound" ]]; then
-  log_err "PVC $PVC_NAME is not in Bound state (current: $PHASE)"
+  log_err "PVC $PVC_NAME is not bound (status: $PHASE)"
   exit 1
 fi
 
-### PVC details
 SIZE=$(oc get pvc "$PVC_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.resources.requests.storage}')
-ACCESS_MODES=$(oc get pvc "$PVC_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.accessModes[*]}')
+ACCESS_MODES=$(oc get pvc "$PVC_NAME" -n "$NAMESPACE" -o jsonpath='{.spec.accessModes[0]}')
+NEW_PVC="${PVC_NAME}-ps"
+SNAPSHOT_NAME="${PVC_NAME}-snapshot-${TIMESTAMP}"
 
-### Save original PVC manifest
+mkdir -p "$MANIFEST_DIR/$NAMESPACE"
 oc get pvc "$PVC_NAME" -n "$NAMESPACE" -o yaml > "$MANIFEST_DIR/$NAMESPACE/old_${PVC_NAME}.yaml"
 
-### Create VolumeSnapshot
-log "Creating VolumeSnapshot $SNAPSHOT_NAME"
+#######################################
+# Create VolumeSnapshot
+#######################################
 cat <<EOF > "$MANIFEST_DIR/$NAMESPACE/${SNAPSHOT_NAME}.yaml"
 apiVersion: snapshot.storage.k8s.io/v1
 kind: VolumeSnapshot
@@ -75,13 +92,19 @@ spec:
     persistentVolumeClaimName: $PVC_NAME
 EOF
 
-[[ "$DRY_RUN" == false ]] && oc apply -f "$MANIFEST_DIR/$NAMESPACE/${SNAPSHOT_NAME}.yaml"
+if ! $DRY_RUN; then
+  oc apply -f "$MANIFEST_DIR/$NAMESPACE/${SNAPSHOT_NAME}.yaml"
+fi
 
 log "Waiting for VolumeSnapshot $SNAPSHOT_NAME to be ready..."
-timeout 120 bash -c -- "[[ '$DRY_RUN' == true ]] || while ! oc get volumesnapshot $SNAPSHOT_NAME -n $NAMESPACE -o jsonpath='{.status.readyToUse}' | grep -q true; do sleep 5; done"
+if ! timeout 120 bash -c "until oc get volumesnapshot $SNAPSHOT_NAME -n $NAMESPACE -o jsonpath='{.status.readyToUse}' | grep -q true; do sleep 5; done"; then
+  log_err "VolumeSnapshot $SNAPSHOT_NAME not ready after timeout"
+  exit 1
+fi
 
-### Create new PVC from snapshot
-log "Creating new PVC $NEW_PVC"
+#######################################
+# Create New PVC From Snapshot
+#######################################
 cat <<EOF > "$MANIFEST_DIR/$NAMESPACE/new_${NEW_PVC}.yaml"
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -90,85 +113,65 @@ metadata:
   namespace: $NAMESPACE
 spec:
   accessModes:
-$(for mode in $ACCESS_MODES; do echo "  - $mode"; done)
-  storageClassName: $NEW_STORAGE_CLASS
+  - $ACCESS_MODES
   resources:
     requests:
       storage: $SIZE
+  storageClassName: $NEW_STORAGE_CLASS
   dataSource:
     name: $SNAPSHOT_NAME
     kind: VolumeSnapshot
     apiGroup: snapshot.storage.k8s.io
 EOF
 
-[[ "$DRY_RUN" == false ]] && oc apply -f "$MANIFEST_DIR/$NAMESPACE/new_${NEW_PVC}.yaml"
-
-### Wait for new PVC to bind
-if [[ "$DRY_RUN" == false ]]; then
-  log "Waiting for new PVC $NEW_PVC to be bound..."
-  timeout 120 bash -c "while [[ \$(oc get pvc $NEW_PVC -n $NAMESPACE -o jsonpath='{.status.phase}') != 'Bound' ]]; do sleep 5; done"
+if ! $DRY_RUN; then
+  oc apply -f "$MANIFEST_DIR/$NAMESPACE/new_${NEW_PVC}.yaml"
 fi
 
-### Remove dataSource after binding
-if [[ "$DRY_RUN" == false ]]; then
-  log "Removing dataSource from PVC $NEW_PVC"
-  oc patch pvc "$NEW_PVC" -n "$NAMESPACE" --type=json -p='[{"op": "remove", "path": "/spec/dataSource"}]' || log_warn "Failed to remove dataSource (may already be removed)"
+log "Waiting for new PVC $NEW_PVC to be bound..."
+if ! timeout 120 bash -c "until oc get pvc $NEW_PVC -n $NAMESPACE -o jsonpath='{.status.phase}' | grep -q Bound; do sleep 5; done"; then
+  log_err "New PVC $NEW_PVC not bound after timeout"
+  exit 1
 fi
 
-### Identify workloads using the PVC
-log "Searching for workloads using PVC: $PVC_NAME"
+log "Removing dataSource field from PVC $NEW_PVC"
+oc patch pvc "$NEW_PVC" -n "$NAMESPACE" --type=json -p='[{"op": "remove", "path": "/spec/dataSource"}]' || log_warn "Failed to remove dataSource from $NEW_PVC"
 
-WORKLOADS=$(oc get deploy,dc,sts -n "$NAMESPACE" -o json | jq -r \
-  --arg pvc "$PVC_NAME" '
-  .items[] | select(.spec.template.spec.volumes[]?.persistentVolumeClaim.claimName == $pvc) |
-  [.kind, .metadata.name] | @tsv')
+#######################################
+# Identify Workloads and Patch
+#######################################
+WORKLOADS=$(oc get deploy,dc,sts -n "$NAMESPACE" -o json | jq -r ".items[] | select(.spec.template.spec.volumes[]?.persistentVolumeClaim.claimName == \"$PVC_NAME\") | [.kind, .metadata.name] | @tsv")
 
 if [[ -z "$WORKLOADS" ]]; then
-  log_warn "No workloads found using PVC $PVC_NAME"
+  log_warn "No workloads found using PVC $PVC_NAME in namespace $NAMESPACE"
   exit 0
 fi
 
 while IFS=$'\t' read -r KIND NAME; do
   log "Processing $KIND $NAME"
-
-  VOLUME_INDEX=$(oc get "$KIND" "$NAME" -n "$NAMESPACE" -o json | jq -r \
-    --arg pvc "$PVC_NAME" '
-      .spec.template.spec.volumes
-      | to_entries[]
-      | select(.value.persistentVolumeClaim.claimName == $pvc)
-      | .key')
-
-  oc get "$KIND" "$NAME" -n "$NAMESPACE" -o yaml > "$MANIFEST_DIR/$NAMESPACE/before_${NAME}.yaml"
-
   REPLICAS=$(oc get "$KIND" "$NAME" -n "$NAMESPACE" -o jsonpath='{.spec.replicas}')
-  log "Scaling down $KIND/$NAME to 0"
-  [[ "$DRY_RUN" == false ]] && oc scale "$KIND" "$NAME" -n "$NAMESPACE" --replicas=0
+  oc get "$KIND" "$NAME" -n "$NAMESPACE" -o yaml > "$MANIFEST_DIR/$NAMESPACE/before_patch_${KIND,,}_$NAME.yaml"
 
-  log "Patching $KIND/$NAME to use PVC $NEW_PVC"
-  PATCH=$(cat <<EOF
-[{"op": "replace", "path": "/spec/template/spec/volumes/$VOLUME_INDEX/persistentVolumeClaim/claimName", "value": "$NEW_PVC"}]
-EOF
-)
-  [[ "$DRY_RUN" == false ]] && oc patch "$KIND" "$NAME" -n "$NAMESPACE" --type=json -p="$PATCH"
+  if ! $DRY_RUN; then
+    oc scale "$KIND" "$NAME" -n "$NAMESPACE" --replicas=0
+    sleep 5
+    VOLUME_INDEX=$(oc get "$KIND" "$NAME" -n "$NAMESPACE" -o json | jq -r ".spec.template.spec.volumes | to_entries[] | select(.value.persistentVolumeClaim.claimName == \"$PVC_NAME\") | .key")
+    oc patch "$KIND" "$NAME" -n "$NAMESPACE" --type='json' -p="[{\"op\":\"replace\",\"path\":\"/spec/template/spec/volumes/$VOLUME_INDEX/persistentVolumeClaim/claimName\",\"value\":\"$NEW_PVC\"}]"
+    sleep 3
+    oc scale "$KIND" "$NAME" -n "$NAMESPACE" --replicas=$REPLICAS
+  fi
+  oc get "$KIND" "$NAME" -n "$NAMESPACE" -o yaml > "$MANIFEST_DIR/$NAMESPACE/after_patch_${KIND,,}_$NAME.yaml"
 
-  oc get "$KIND" "$NAME" -n "$NAMESPACE" -o yaml > "$MANIFEST_DIR/$NAMESPACE/after_${NAME}.yaml"
-
-  log "Scaling $KIND/$NAME back to $REPLICAS"
-  [[ "$DRY_RUN" == false ]] && oc scale "$KIND" "$NAME" -n "$NAMESPACE" --replicas="$REPLICAS"
 done <<< "$WORKLOADS"
 
-log " PVC migration complete for $PVC_NAME → $NEW_PVC"
-
-### Email error report if any
+#######################################
+# Email Error Report if Needed
+#######################################
 if [[ -s "$ERROR_REPORT" ]]; then
-  log_warn "Sending error report to $EMAIL_TO"
-  {
-    echo "Subject: PVC Migration Error Report - $TIMESTAMP"
-    echo "From: $EMAIL_FROM"
-    echo "To: $EMAIL_TO"
-    echo
-    echo "Errors during PVC migration:"
-    echo
-    cat "$ERROR_REPORT"
-  } | /usr/sbin/sendmail "$EMAIL_TO"
+  SUBJECT="PVC Storage Migration Errors - $(date +%F)"
+  BODY="Errors occurred during PVC migration for $NAMESPACE/$PVC_NAME. See attached CSV."
+  echo -e "$BODY" | mailx -s "$SUBJECT" -a "$ERROR_REPORT" "$EMAIL_TO"
+  log_warn "Error report emailed to $EMAIL_TO"
+else
+  log "Migration completed without errors."
 fi
