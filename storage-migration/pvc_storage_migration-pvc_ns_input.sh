@@ -157,7 +157,7 @@ EOF
   [[ "$DRY_RUN" == false ]] && oc scale "$KIND" "$NAME" -n "$NAMESPACE" --replicas="$REPLICAS"
 done <<< "$WORKLOADS"
 
-log "✅ PVC migration complete for $PVC_NAME → $NEW_PVC"
+log " PVC migration complete for $PVC_NAME → $NEW_PVC"
 
 ### Email error report if any
 if [[ -s "$ERROR_REPORT" ]]; then
