@@ -2,63 +2,44 @@
 set -euo pipefail
 
 STORAGE_CLASS="ocs-storagecluster-cephfs"
-TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-REPORT_FILE="/tmp/pvc_usage_report_${TIMESTAMP}.csv"
+REPORT_FILE="pvc_usage_report_$(date +%Y%m%d_%H%M%S).csv"
 
-echo "NAMESPACE,PVC_NAME,SIZE,USED(GB)" > "$REPORT_FILE"
+echo "Namespace,PVC Name,Requested Size,Actual Usage,StorageClass" > "$REPORT_FILE"
 
-# Step 1: Get all PVCs with the desired storage class
-mapfile -t cephfs_pvcs < <(oc get pvc --all-namespaces -o json | jq -r --arg sc "$STORAGE_CLASS" '
-  .items[] |
-  select(
-    (.spec.storageClassName == $sc) or
-    (.metadata.annotations["volume.beta.kubernetes.io/storage-class"] == $sc)
-  ) |
-  "\(.metadata.namespace),\(.metadata.name),\(.spec.resources.requests.storage)"
-')
+echo "Scanning PVCs using $STORAGE_CLASS storage class..."
 
-# Step 2: Function to get actual usage in GB
-get_pvc_usage_from_pod() {
-  local ns="$1"
-  local pvc="$2"
-  local usage="N/A"
+ALL_PVCS=$(oc get pvc --all-namespaces -o json)
 
-  pod=$(oc get pod -n "$ns" -o json | jq -r --arg pvc "$pvc" '
-    .items[] |
-    select(.status.phase == "Running") |
-    select(.spec.volumes[]? | select(.persistentVolumeClaim.claimName == $pvc)) |
-    .metadata.name' | head -n1)
-
-  if [[ -n "$pod" ]]; then
-    for container in $(oc get pod "$pod" -n "$ns" -o jsonpath='{.spec.containers[*].name}'); do
-      mount_path=$(oc get pod "$pod" -n "$ns" -o json | jq -r --arg pvc "$pvc" '
-        .spec.volumes[] |
-        select(.persistentVolumeClaim.claimName == $pvc) |
-        .name' | xargs -I{} jq -r --arg name "{}" '
-        .spec.containers[].volumeMounts[]? |
-        select(.name == $name) |
-        .mountPath' < <(oc get pod "$pod" -n "$ns" -o json))
-
-      if [[ -n "$mount_path" ]]; then
-        usage_bytes=$(oc exec -n "$ns" "$pod" -c "$container" -- df -B1 "$mount_path" 2>/dev/null | awk 'NR==2 { print $3 }')
-        if [[ "$usage_bytes" =~ ^[0-9]+$ ]]; then
-          usage=$(awk -v b="$usage_bytes" 'BEGIN { printf "%.2f", b / (1024*1024*1024) }')
-        fi
-        break
-      fi
-    done
+echo "$ALL_PVCS" | jq -c '.items[]' | while read -r pvc; do
+  NS=$(echo "$pvc" | jq -r '.metadata.namespace')
+  PVC_NAME=$(echo "$pvc" | jq -r '.metadata.name')
+  REQUESTED_SIZE=$(echo "$pvc" | jq -r '.spec.resources.requests.storage')
+  
+  # Determine actual storage class
+  SC=$(echo "$pvc" | jq -r '.spec.storageClassName // empty')
+  if [[ -z "$SC" || "$SC" == "null" ]]; then
+    SC=$(echo "$pvc" | jq -r '.metadata.annotations["volume.beta.kubernetes.io/storage-class"] // empty')
   fi
 
-  echo "$usage"
-}
+  [[ "$SC" != "$STORAGE_CLASS" ]] && continue
 
-# Step 3: Build report
-for pvc_line in "${cephfs_pvcs[@]}"; do
-  ns=$(cut -d',' -f1 <<< "$pvc_line")
-  pvc=$(cut -d',' -f2 <<< "$pvc_line")
-  size=$(cut -d',' -f3 <<< "$pvc_line")
-  used=$(get_pvc_usage_from_pod "$ns" "$pvc")
-  echo "$ns,$pvc,$size,$used" >> "$REPORT_FILE"
+  # Find pod using this PVC
+  POD=$(oc get pod -n "$NS" -o json | jq -r --arg PVC "$PVC_NAME" \
+    '.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $PVC) | .metadata.name' | head -n1)
+
+  if [[ -z "$POD" ]]; then
+    echo "$NS/$PVC_NAME is not mounted in any pod."
+    echo "$NS,$PVC_NAME,$REQUESTED_SIZE,N/A,$SC" >> "$REPORT_FILE"
+    continue
+  fi
+
+  # Get container name
+  CONTAINER=$(oc get pod "$POD" -n "$NS" -o jsonpath='{.spec.containers[0].name}')
+
+  # Try to get actual usage using `df -h`
+  ACTUAL_USAGE=$(oc exec -n "$NS" "$POD" -c "$CONTAINER" -- df -h | grep /dev | awk 'NR==1{print $3}' 2>/dev/null || echo "N/A")
+
+  echo "$NS,$PVC_NAME,$REQUESTED_SIZE,$ACTUAL_USAGE,$SC" >> "$REPORT_FILE"
 done
 
-echo "Report saved to: $REPORT_FILE"
+echo "✅ PVC usage report saved to: $REPORT_FILE"
