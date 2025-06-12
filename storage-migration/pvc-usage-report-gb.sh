@@ -1,11 +1,3 @@
-oc get pods --all-namespaces -o jsonpath="{range .items[*]}{.metadata.namespace}{','}{.metadata.name}{','}{range .spec.containers[*]}{.image}{'\n'}{end}{end}" | sort | uniq | grep nexus.cmgmi.local
-
-
-
-skopeo copy  docker://nexus.cmgmi.local:18079/oss/kubernetes-csi/livenessprobe:v2.14.0 docker://nexus.azure.cmgmi.local:18080/oss/kubernetes-csi/livenessprobe:v2.14.0
-
-
-
 #!/bin/bash
 
 ##########################
