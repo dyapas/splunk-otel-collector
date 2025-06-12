@@ -68,13 +68,16 @@ done > /tmp/_workload_pvcs.txt
 
 # Step 4: Handle StatefulSet PVCs
 mapfile -t statefulsets < <(oc get statefulset --all-namespaces -o json | jq -c '
-  .items[] | {
+  .items[] |
+  select(.spec.volumeClaimTemplates != null and (.spec.volumeClaimTemplates | length > 0)) |
+  {
     namespace: .metadata.namespace,
     name: .metadata.name,
     tier: (.metadata.labels["app.ocp.com/tier"] // "N/A"),
     volumeClaims: [.spec.volumeClaimTemplates[].metadata.name]
   }
 ')
+
 
 for sts in "${statefulsets[@]}"; do
   ns=$(jq -r '.namespace' <<< "$sts")
