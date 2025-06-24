@@ -8,7 +8,7 @@ echo "Namespace,PVC Name,Requested Size,Actual Usage,StorageClass,App Tier,Team 
 
 echo "🔍 Building namespace email/manager label map..."
 
-# Step 1: Preload namespace label maps
+# Step 1: Load namespace labels into maps
 declare -A ns_email_map
 declare -A ns_manager_map
 
@@ -31,48 +31,50 @@ for line in $PVC_LIST; do
   PVC_NAME=$(echo "$line" | cut -d';' -f2)
 
   PVC_JSON=$(oc get pvc "$PVC_NAME" -n "$NS" -o json)
-
   REQUESTED_SIZE=$(echo "$PVC_JSON" | jq -r '.spec.resources.requests.storage')
 
-  # Handle both spec and annotation-based storageClass
+  # Get storage class from spec or annotation
   SC_SPEC=$(echo "$PVC_JSON" | jq -r '.spec.storageClassName // empty')
   SC_ANNOTATION=$(echo "$PVC_JSON" | jq -r '.metadata.annotations["volume.beta.kubernetes.io/storage-class"] // empty')
 
   if [[ "$SC_SPEC" != "$STORAGE_CLASS" && "$SC_ANNOTATION" != "$STORAGE_CLASS" ]]; then
     continue
   fi
+
   SC="${SC_SPEC:-$SC_ANNOTATION}"
 
-  # Find pod using this PVC
+  # Find a pod using this PVC
   POD=$(oc get pod -n "$NS" -o json | jq -r --arg PVC "$PVC_NAME" '
     .items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName == $PVC) | .metadata.name' | head -n1)
 
   if [[ -z "$POD" ]]; then
-    echo "⚠️ $NS/$PVC_NAME is not mounted to any pod."
-    echo "$NS,$PVC_NAME,$REQUESTED_SIZE,N/A,$SC,N/A,${ns_email_map[$NS]},${ns_manager_map[$NS]}" >> "$REPORT_FILE"
+    USAGE_NOTE="Not mounted to any pod"
+    echo "⚠️  $NS/$PVC_NAME: $USAGE_NOTE"
+    echo "$NS,$PVC_NAME,$REQUESTED_SIZE,$USAGE_NOTE,$SC,N/A,${ns_email_map[$NS]},${ns_manager_map[$NS]}" >> "$REPORT_FILE"
     continue
   fi
 
   CONTAINER=$(oc get pod "$POD" -n "$NS" -o jsonpath='{.spec.containers[0].name}')
 
-  # Get volume name
-  VOLUME_NAME=$(oc get pod "$POD" -n "$NS" -o json | jq -r --arg PVC "$PVC_NAME" \
-    '.spec.volumes[] | select(.persistentVolumeClaim.claimName == $PVC) | .name')
+  # Get volume name for this PVC in the pod
+  VOLUME_NAME=$(oc get pod "$POD" -n "$NS" -o json | jq -r --arg PVC "$PVC_NAME" '
+    .spec.volumes[] | select(.persistentVolumeClaim.claimName == $PVC) | .name')
 
-  # Get mount path
-  MOUNT_PATH=$(oc get pod "$POD" -n "$NS" -o json | jq -r --arg VOL "$VOLUME_NAME" \
-    '.spec.containers[].volumeMounts[] | select(.name == $VOL) | .mountPath' | head -n1)
+  # Get mount path using volume name
+  MOUNT_PATH=$(oc get pod "$POD" -n "$NS" -o json | jq -r --arg VOL "$VOLUME_NAME" '
+    .spec.containers[].volumeMounts[] | select(.name == $VOL) | .mountPath' | head -n1)
 
   if [[ -z "$MOUNT_PATH" ]]; then
-    echo "⚠️ $NS/$PVC_NAME: Mount path not found."
-    echo "$NS,$PVC_NAME,$REQUESTED_SIZE,N/A,$SC,N/A,${ns_email_map[$NS]},${ns_manager_map[$NS]}" >> "$REPORT_FILE"
+    USAGE_NOTE="Mount path not found in pod"
+    echo "⚠️  $NS/$PVC_NAME: $USAGE_NOTE"
+    echo "$NS,$PVC_NAME,$REQUESTED_SIZE,$USAGE_NOTE,$SC,N/A,${ns_email_map[$NS]},${ns_manager_map[$NS]}" >> "$REPORT_FILE"
     continue
   fi
 
-  # Get actual usage via df -h
-  ACTUAL_USAGE=$(oc exec -n "$NS" "$POD" -c "$CONTAINER" -- df -h "$MOUNT_PATH" 2>/dev/null | awk 'NR==2{print $3}' || echo "N/A")
+  # Run df -h to get actual usage
+  ACTUAL_USAGE=$(oc exec -n "$NS" "$POD" -c "$CONTAINER" -- df -h "$MOUNT_PATH" 2>/dev/null | awk 'NR==2{print $3}' || echo "Error reading usage")
 
-  # Get app tier label from pod
+  # Get app tier from pod label
   TIER=$(oc get pod "$POD" -n "$NS" -o json | jq -r '.metadata.labels["app.ocp.com/tier"] // "N/A"')
 
   echo "✅ $NS/$PVC_NAME - Usage: $ACTUAL_USAGE - Tier: $TIER"
