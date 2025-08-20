@@ -1,7 +1,9 @@
 #!/bin/bash
 
-# Output CSV header
-echo "Namespace,Type,Name,LastDeploymentDate,DeployedBy"
+OUTPUT_FILE="deployments_report.csv"
+
+# Write CSV header
+echo "Namespace,Type,Name,LastDeploymentDate,DeployedBy" > "$OUTPUT_FILE"
 
 # Loop over both Deployments and DeploymentConfigs
 for kind in deployment deploymentconfig; do
@@ -27,5 +29,7 @@ for kind in deployment deploymentconfig; do
       )
     } |
     [.ns, .type, .name, .deploy_time, .deployed_by] | @csv
-  '
+  ' >> "$OUTPUT_FILE"
 done
+
+echo "✅ Report generated: $OUTPUT_FILE"
