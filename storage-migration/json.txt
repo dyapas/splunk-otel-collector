@@ -1,0 +1,5 @@
+#alias cpustat='for i in `oc get node --no-headers|awk '{print$1}'`;do echo "************** Host - $i **************"; oc describe node $i|grep -A3 Allocated; done'
+alias allocresources="for i in `oc get nodes --no-headers | awk '{print$1}'`;do oc get node ${i} -o jsonpath='{.metadata.name}{"-"}{"\tMEMORY:"}{.status.allocatable.memory}{"\tCPU:"}{.status.allocatable.cpu}{"\n"}'; done"
+
+alias nodecapacity='oc get nodes -o=custom-columns=NAME:.metadata.name,MEMORY:.status.capacity.memory,CPU:.status.capacity.cpu,IPAddress:.status.addresses[?\(@.type==\"InternalIP\"\)].address'
+
