@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# dmd Resource Report Generator - Simple CSV Output
-# Generates comprehensive resource reports for namespaces with label "appDomain=dmd"
+# EDMS Resource Report Generator - Simple CSV Output
+# Generates comprehensive resource reports for namespaces with label "appDomain=edms"
 # Includes Deployments, StatefulSets, DeploymentConfigs with CPU/Memory requests/limits and PVC information
 
 # Colors for output
@@ -59,7 +59,7 @@ parse_arguments() {
                 ;;
             -h|--help)
                 echo "Usage: $0 [--cluster-name <name>]"
-                echo "Generates CSV report for dmd resources"
+                echo "Generates CSV report for EDMS resources"
                 exit 0
                 ;;
             *)
@@ -79,7 +79,7 @@ parse_arguments() {
 # Setup output directory
 setup_output_directory() {
     TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-    OUTPUT_DIR="/opt/webadmin/dmd-resource-reports/dmd-${CLUSTER_NAME}/${TIMESTAMP}"
+    OUTPUT_DIR="/opt/webadmin/edms-resource-reports/edms-${CLUSTER_NAME}/${TIMESTAMP}"
     
     if ! mkdir -p "$OUTPUT_DIR"; then
         print_color "$RED" "Error: Failed to create output directory: $OUTPUT_DIR"
@@ -177,6 +177,70 @@ format_resource() {
     else
         echo "${value}${unit}"
     fi
+}
+
+# Get workload selector for finding pods
+get_workload_selector() {
+    local workload_name="$1"
+    local workload_type="$2"
+    local namespace="$3"
+    
+    # Get the actual labels used by the workload
+    case "$workload_type" in
+        "Deployment")
+            # For deployments, get the selector from the deployment spec
+            local selector_raw=$(kubectl get deployment "$workload_name" -n "$namespace" -o json 2>/dev/null | jq -r '.spec.selector.matchLabels | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null | head -1)
+            if [[ -n "$selector_raw" ]]; then
+                echo "$selector_raw"
+            else
+                echo "app=${workload_name}"
+            fi
+            ;;
+        "StatefulSet")
+            # For statefulsets, get the selector from the statefulset spec
+            local selector_raw=$(kubectl get statefulset "$workload_name" -n "$namespace" -o json 2>/dev/null | jq -r '.spec.selector.matchLabels | to_entries[] | "\(.key)=\(.value)"' 2>/dev/null | head -1)
+            if [[ -n "$selector_raw" ]]; then
+                echo "$selector_raw"
+            else
+                echo "app=${workload_name}"
+            fi
+            ;;
+        "DeploymentConfig")
+            echo "deploymentconfig=${workload_name}"
+            ;;
+        *)
+            echo "app=${workload_name}"
+            ;;
+    esac
+}
+
+# Write CSV rows for workload (one row per pod)
+write_workload_csv_rows() {
+    local namespace="$1"
+    local workload_name="$2"
+    local workload_type="$3"
+    local result="$4"
+    local csv_file="$5"
+    
+    # Extract base workload info (everything except the pods_info)
+    local base_info=$(echo "$result" | cut -d, -f1-8)
+    local pods_info=$(echo "$result" | cut -d, -f9)
+    
+    # Handle case where no pods found
+    if [[ "$pods_info" == "N/A:N/A" ]]; then
+        echo "\"$namespace\",\"$workload_name\",\"$workload_type\",\"$(echo "$base_info" | cut -d, -f1)\",\"$(echo "$base_info" | cut -d, -f2)\",\"$(echo "$base_info" | cut -d, -f3)\",\"$(echo "$base_info" | cut -d, -f4)\",\"$(echo "$base_info" | cut -d, -f5)\",\"$(echo "$base_info" | cut -d, -f6)\",\"$(echo "$base_info" | cut -d, -f7)\",\"$(echo "$base_info" | cut -d, -f8)\",\"N/A\",\"N/A\"" >> "$csv_file"
+        return
+    fi
+    
+    # Split pods_info by pipe separator and create one row per pod
+    IFS='|' read -ra POD_ARRAY <<< "$pods_info"
+    for pod_entry in "${POD_ARRAY[@]}"; do
+        if [[ -n "$pod_entry" ]]; then
+            local pod_name=$(echo "$pod_entry" | cut -d: -f1)
+            local node_name=$(echo "$pod_entry" | cut -d: -f2)
+            echo "\"$namespace\",\"$workload_name\",\"$workload_type\",\"$(echo "$base_info" | cut -d, -f1)\",\"$(echo "$base_info" | cut -d, -f2)\",\"$(echo "$base_info" | cut -d, -f3)\",\"$(echo "$base_info" | cut -d, -f4)\",\"$(echo "$base_info" | cut -d, -f5)\",\"$(echo "$base_info" | cut -d, -f6)\",\"$(echo "$base_info" | cut -d, -f7)\",\"$(echo "$base_info" | cut -d, -f8)\",\"$pod_name\",\"$node_name\"" >> "$csv_file"
+        fi
+    done
 }
 
 # Analyze workload resources
@@ -298,40 +362,74 @@ analyze_workload() {
     local cpu_lim_formatted=$([[ "$total_cpu_lim" == "0" ]] && echo "No Limit" || format_resource "$total_cpu_lim" "m")
     local mem_lim_formatted=$([[ "$total_mem_lim" == "0" ]] && echo "No Limit" || format_resource "$total_mem_lim" "Mi")
     
-    echo "$cpu_req_formatted,$mem_req_formatted,$cpu_lim_formatted,$mem_lim_formatted,$container_count,$has_pvc,$pvc_info,$total_storage"
+    # Get node information from all running pods
+    local pod_count=0
+    local pods_info=""
+    local selector=$(get_workload_selector "$workload_name" "$workload_type" "$namespace")
+    
+    if [[ -n "$selector" ]]; then
+        # Try to find all running pods using the selector
+        local pods=$(kubectl get pods -n "$namespace" -l "$selector" --no-headers 2>/dev/null | grep "Running" | awk '{print $1}')
+        
+        # If no running pods found with selector, try finding pods by name pattern
+        if [[ -z "$pods" ]]; then
+            pods=$(kubectl get pods -n "$namespace" --no-headers 2>/dev/null | grep "^${workload_name}" | grep "Running" | awk '{print $1}')
+        fi
+        
+        # Get all pod info for multiple rows
+        if [[ -n "$pods" ]]; then
+            while IFS= read -r pod; do
+                if [[ -n "$pod" ]]; then
+                    local node=$(kubectl get pod "$pod" -n "$namespace" -o jsonpath='{.spec.nodeName}' 2>/dev/null)
+                    if [[ -n "$node" && "$node" != "null" ]]; then
+                        [[ -n "$pods_info" ]] && pods_info="$pods_info|"
+                        pods_info="${pods_info}${pod}:${node}"
+                        ((pod_count++))
+                    fi
+                fi
+            done <<< "$pods"
+        fi
+    fi
+    
+    # If no pods found, return single row with N/A
+    if [[ "$pod_count" -eq 0 ]]; then
+        echo "$cpu_req_formatted,$mem_req_formatted,$cpu_lim_formatted,$mem_lim_formatted,$container_count,$has_pvc,$pvc_info,$total_storage,N/A,N/A"
+    else
+        echo "$cpu_req_formatted,$mem_req_formatted,$cpu_lim_formatted,$mem_lim_formatted,$container_count,$has_pvc,$pvc_info,$total_storage,$pods_info"
+    fi
 }
 
 # Main analysis function
 main() {
     local start_time=$(date +%s)
     
-    print_color "$BLUE" "dmd Resource Report Generator"
+    print_color "$BLUE" "EDMS Resource Report Generator"
     print_color "$BLUE" "=============================="
     
     parse_arguments "$@"
     setup_output_directory
     check_prerequisites
     
-    # Get dmd namespaces
-    local dmd_namespaces
-    dmd_namespaces=$(kubectl get namespaces -l appDomain=dmd -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    # Get EDMS namespaces
+    local edms_namespaces
+    edms_namespaces=$(kubectl get namespaces -l appDomain=edms -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
     
-    if [[ -z "$dmd_namespaces" ]]; then
-        print_color "$YELLOW" "No namespaces found with label appDomain=dmd"
+    if [[ -z "$edms_namespaces" ]]; then
+        print_color "$YELLOW" "No namespaces found with label appDomain=edms"
         exit 0
     fi
     
-    print_color "$GREEN" "Found dmd namespaces: $dmd_namespaces"
+    print_color "$GREEN" "Found EDMS namespaces: $edms_namespaces"
     
     # Setup CSV
-    local csv_file="${OUTPUT_DIR}/dmd-resource-analysis-${CLUSTER_NAME}-${TIMESTAMP}.csv"
-    echo "Namespace,WorkloadName,WorkloadType,CPURequests,MemoryRequests,CPULimits,MemoryLimits,ContainerCount,HasPVC,PVCDetails,TotalStorageMB,PVCCount" > "$csv_file"
+    local csv_file="${OUTPUT_DIR}/edms-resource-analysis-${CLUSTER_NAME}-${TIMESTAMP}.csv"
+    echo "Namespace,WorkloadName,WorkloadType,CPURequests,MemoryRequests,CPULimits,MemoryLimits,ContainerCount,HasPVC,PVCDetails,TotalStorageMB,PodName,NodeName" > "$csv_file"
     
     local total_workloads=0
     local workloads_with_pvc=0
     
     # Process each namespace
-    for namespace in $dmd_namespaces; do
+    for namespace in $edms_namespaces; do
         print_color "$CYAN" "📁 Analyzing namespace: $namespace"
         
         # Deployments
@@ -340,7 +438,7 @@ main() {
             [[ -z "$deployment" ]] && continue
             print_color "$GREEN" "  📦 $deployment"
             local result=$(analyze_workload "$namespace" "$deployment" "Deployment")
-            echo "\"$namespace\",\"$deployment\",\"Deployment\",\"$(echo $result | tr ',' '","')\"" >> "$csv_file"
+            write_workload_csv_rows "$namespace" "$deployment" "Deployment" "$result" "$csv_file"
             ((total_workloads++))
             [[ "$result" =~ ,Yes, ]] && ((workloads_with_pvc++))
         done
@@ -351,7 +449,7 @@ main() {
             [[ -z "$statefulset" ]] && continue
             print_color "$GREEN" "  📊 $statefulset"
             local result=$(analyze_workload "$namespace" "$statefulset" "StatefulSet")
-            echo "\"$namespace\",\"$statefulset\",\"StatefulSet\",\"$(echo $result | tr ',' '","')\"" >> "$csv_file"
+            write_workload_csv_rows "$namespace" "$statefulset" "StatefulSet" "$result" "$csv_file"
             ((total_workloads++))
             [[ "$result" =~ ,Yes, ]] && ((workloads_with_pvc++))
         done
@@ -362,7 +460,7 @@ main() {
             [[ -z "$deploymentconfig" ]] && continue
             print_color "$GREEN" "  ⚙️  $deploymentconfig"
             local result=$(analyze_workload "$namespace" "$deploymentconfig" "DeploymentConfig")
-            echo "\"$namespace\",\"$deploymentconfig\",\"DeploymentConfig\",\"$(echo $result | tr ',' '","')\"" >> "$csv_file"
+            write_workload_csv_rows "$namespace" "$deploymentconfig" "DeploymentConfig" "$result" "$csv_file"
             ((total_workloads++))
             [[ "$result" =~ ,Yes, ]] && ((workloads_with_pvc++))
         done
@@ -377,7 +475,7 @@ main() {
     echo "Workloads with PVC: $workloads_with_pvc"
     echo "Duration: ${duration}s"
     print_color "$YELLOW" "CSV Report: $csv_file"
-    print_color "$GREEN" "dmd Resource Analysis completed! 🎉"
+    print_color "$GREEN" "EDMS Resource Analysis completed! 🎉"
 }
 
 # Run the script
