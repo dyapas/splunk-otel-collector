@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# EDMS Resource Report Generator - Simple CSV Output
-# Generates comprehensive resource reports for namespaces with label "appDomain=edms"
+# Kubernetes Resource Report Generator - Simple CSV Output
+# Generates comprehensive resource reports for namespaces with specified label
 # Includes Deployments, StatefulSets, DeploymentConfigs with CPU/Memory requests/limits and PVC information
 
 # Colors for output
@@ -16,6 +16,9 @@ NC='\033[0m'
 CLUSTER_NAME=""
 OUTPUT_DIR=""
 TIMESTAMP=""
+NAMESPACE_LABEL=""
+LABEL_KEY=""
+LABEL_VALUE=""
 
 print_color() {
     echo -e "${1}${2}${NC}"
@@ -26,9 +29,9 @@ get_current_cluster() {
     local context_info
     context_info=$(kubectl config current-context 2>/dev/null)
     if [[ $? -ne 0 || -z "$context_info" ]]; then
-        print_color "$RED" "Error: No active kubectl context found"
-        print_color "$YELLOW" "Please login to your cluster first: oc login or kubectl config use-context"
-        exit 1
+        print_color "$YELLOW" "Warning: Could not detect cluster context, using 'unknown-cluster'"
+        echo "unknown-cluster"
+        return
     fi
     
     # Extract cluster name from context
@@ -57,17 +60,56 @@ parse_arguments() {
                 CLUSTER_NAME="$2"
                 shift 2
                 ;;
+            --label)
+                NAMESPACE_LABEL="$2"
+                shift 2
+                ;;
             -h|--help)
-                echo "Usage: $0 [--cluster-name <name>]"
-                echo "Generates CSV report for EDMS resources"
+                echo "Usage: $0 --label <key=value> [--cluster-name <name>]"
+                echo ""
+                echo "Required parameters:"
+                echo "  --label <key=value>    Namespace label selector (e.g., appDomain=edms)"
+                echo ""
+                echo "Optional parameters:"
+                echo "  --cluster-name <name>  Override auto-detected cluster name"
+                echo ""
+                echo "Examples:"
+                echo "  $0 --label appDomain=edms"
+                echo "  $0 --label environment=production"
+                echo "  $0 --label team=platform --cluster-name aro-prod"
+                echo ""
+                echo "Prerequisites:"
+                echo "  - Login to your cluster first (oc login or kubectl config use-context)"
+                echo "  - Ensure kubectl and jq commands are available"
+                echo ""
+                echo "Generates CSV report for Kubernetes resources in namespaces matching the label"
                 exit 0
                 ;;
             *)
                 print_color "$RED" "Unknown option: $1"
+                echo "Use --help for usage information"
                 exit 1
                 ;;
         esac
     done
+
+    # Validate required parameters
+    if [[ -z "$NAMESPACE_LABEL" ]]; then
+        print_color "$RED" "Error: --label parameter is required"
+        echo "Example: $0 --label appDomain=edms"
+        echo "Use --help for more information"
+        exit 1
+    fi
+
+    # Parse label into key and value
+    if [[ "$NAMESPACE_LABEL" =~ ^([^=]+)=([^=]+)$ ]]; then
+        LABEL_KEY="${BASH_REMATCH[1]}"
+        LABEL_VALUE="${BASH_REMATCH[2]}"
+    else
+        print_color "$RED" "Error: Invalid label format. Expected format: key=value"
+        echo "Example: appDomain=edms"
+        exit 1
+    fi
 
     # Auto-detect cluster if not provided
     if [[ -z "$CLUSTER_NAME" ]]; then
@@ -79,7 +121,7 @@ parse_arguments() {
 # Setup output directory
 setup_output_directory() {
     TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-    OUTPUT_DIR="/opt/webadmin/edms-resource-reports/edms-${CLUSTER_NAME}/${TIMESTAMP}"
+    OUTPUT_DIR="/opt/webadmin/k8s-resource-reports/${LABEL_VALUE}-${CLUSTER_NAME}/${TIMESTAMP}"
     
     if ! mkdir -p "$OUTPUT_DIR"; then
         print_color "$RED" "Error: Failed to create output directory: $OUTPUT_DIR"
@@ -98,12 +140,7 @@ check_prerequisites() {
         fi
     done
     
-    if ! kubectl auth can-i get namespaces &>/dev/null; then
-        print_color "$RED" "Error: Cannot access namespaces with current kubectl context"
-        exit 1
-    fi
-    
-    print_color "$GREEN" "Successfully validated kubectl access"
+    print_color "$GREEN" "Prerequisites validated"
 }
 
 # Convert CPU to millicores
@@ -403,33 +440,33 @@ analyze_workload() {
 main() {
     local start_time=$(date +%s)
     
-    print_color "$BLUE" "EDMS Resource Report Generator"
-    print_color "$BLUE" "=============================="
+    print_color "$BLUE" "Kubernetes Resource Report Generator"
+    print_color "$BLUE" "====================================="
     
     parse_arguments "$@"
     setup_output_directory
     check_prerequisites
     
-    # Get EDMS namespaces
-    local edms_namespaces
-    edms_namespaces=$(kubectl get namespaces -l appDomain=edms -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    # Get namespaces matching the label
+    local target_namespaces
+    target_namespaces=$(kubectl get namespaces -l "${NAMESPACE_LABEL}" -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
     
-    if [[ -z "$edms_namespaces" ]]; then
-        print_color "$YELLOW" "No namespaces found with label appDomain=edms"
+    if [[ -z "$target_namespaces" ]]; then
+        print_color "$YELLOW" "No namespaces found with label ${NAMESPACE_LABEL}"
         exit 0
     fi
     
-    print_color "$GREEN" "Found EDMS namespaces: $edms_namespaces"
+    print_color "$GREEN" "Found namespaces with label ${NAMESPACE_LABEL}: $target_namespaces"
     
     # Setup CSV
-    local csv_file="${OUTPUT_DIR}/edms-resource-analysis-${CLUSTER_NAME}-${TIMESTAMP}.csv"
+    local csv_file="${OUTPUT_DIR}/k8s-resource-analysis-${LABEL_VALUE}-${CLUSTER_NAME}-${TIMESTAMP}.csv"
     echo "Namespace,WorkloadName,WorkloadType,CPURequests,MemoryRequests,CPULimits,MemoryLimits,ContainerCount,HasPVC,PVCDetails,TotalStorageMB,PodName,NodeName" > "$csv_file"
     
     local total_workloads=0
     local workloads_with_pvc=0
     
     # Process each namespace
-    for namespace in $edms_namespaces; do
+    for namespace in $target_namespaces; do
         print_color "$CYAN" "📁 Analyzing namespace: $namespace"
         
         # Deployments
@@ -471,11 +508,12 @@ main() {
     
     print_color "$GREEN" "Analysis complete!"
     print_color "$CYAN" "=== SUMMARY ==="
+    echo "Label selector: ${NAMESPACE_LABEL}"
     echo "Total workloads: $total_workloads"
     echo "Workloads with PVC: $workloads_with_pvc"
     echo "Duration: ${duration}s"
     print_color "$YELLOW" "CSV Report: $csv_file"
-    print_color "$GREEN" "EDMS Resource Analysis completed! 🎉"
+    print_color "$GREEN" "Kubernetes Resource Analysis completed! 🎉"
 }
 
 # Run the script
