@@ -1,46 +1,49 @@
 #!/bin/bash
 
+set -o errexit
+set -o pipefail
+set -o nounset
+
 NAMESPACE=$1
 OUTPUT_FILE="images-${NAMESPACE}-$(date +%Y%m%d%H%M%S).csv"
 
-if [[ -z "$NAMESPACE" ]]; then
+if [[ -z "${NAMESPACE:-}" ]]; then
   echo "Usage: $0 <namespace>"
   exit 1
 fi
 
+# Check dependencies
+command -v oc >/dev/null || { echo "oc not found"; exit 1; }
+command -v jq >/dev/null || { echo "jq not found"; exit 1; }
+
 echo "Kind,Workload,ContainerType,ContainerName,Image" > "$OUTPUT_FILE"
 
-process_workload() {
-  local kind=$1
-  local name=$2
+echo "Fetching all workloads in one call..."
 
-  json=$(oc get $kind $name -n $NAMESPACE -o json)
+# Fetch once (avoids repeated API calls)
+ALL_JSON=$(oc get deploy,statefulset -n "$NAMESPACE" -o json)
+
+echo "$ALL_JSON" | jq -c '.items[]' | while read -r item; do
+
+  KIND=$(echo "$item" | jq -r '.kind' | tr '[:upper:]' '[:lower:]')
+  NAME=$(echo "$item" | jq -r '.metadata.name')
 
   # Containers
-  echo "$json" | jq -c '.spec.template.spec.containers[]?' | while read c; do
-    cname=$(echo $c | jq -r '.name')
-    cimage=$(echo $c | jq -r '.image')
+  echo "$item" | jq -c '.spec.template.spec.containers[]?' | while read -r c; do
+    CNAME=$(echo "$c" | jq -r '.name // "NA"')
+    CIMAGE=$(echo "$c" | jq -r '.image // "NA"')
 
-    echo "$kind,$name,container,$cname,$cimage" >> "$OUTPUT_FILE"
+    echo "$KIND,$NAME,container,$CNAME,$CIMAGE" >> "$OUTPUT_FILE"
   done
 
-  # Init Containers
-  echo "$json" | jq -c '.spec.template.spec.initContainers[]?' | while read c; do
-    cname=$(echo $c | jq -r '.name')
-    cimage=$(echo $c | jq -r '.image')
+  # InitContainers (safe even if absent)
+  echo "$item" | jq -c '.spec.template.spec.initContainers[]?' | while read -r c; do
+    CNAME=$(echo "$c" | jq -r '.name // "NA"')
+    CIMAGE=$(echo "$c" | jq -r '.image // "NA"')
 
-    echo "$kind,$name,initContainer,$cname,$cimage" >> "$OUTPUT_FILE"
+    echo "$KIND,$NAME,initContainer,$CNAME,$CIMAGE" >> "$OUTPUT_FILE"
   done
-}
 
-echo "Collecting Deployments..."
-for d in $(oc get deployments -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
-  process_workload "deployment" "$d"
 done
 
-echo "Collecting StatefulSets..."
-for s in $(oc get statefulsets -n $NAMESPACE -o jsonpath='{.items[*].metadata.name}'); do
-  process_workload "statefulset" "$s"
-done
-
-echo "CSV generated: $OUTPUT_FILE"
+echo "✅ CSV generated: $OUTPUT_FILE"
